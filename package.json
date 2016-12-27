@@ -22,7 +22,9 @@
       "$ when-changed $(find app/) -c npm run test-build                                             "
     ],
     "test": "npm run test-build && mocha --require source-map-support/register --compilers js:babel-register",
-    "test-watch": "npm run test-build && mocha --require source-map-support/register --compilers js:babel-register --watch"
+    "test-watch": "npm run test-build && mocha --require source-map-support/register --compilers js:babel-register --watch",
+    "prepublish": "(in-publish && npm run clean && npm run build && npm run test-build && npm run flow-check && npm run test && /bin/false) || not-in-publish",
+    "prepublish.README": "to enable publishing, remove the /bin/false at the end (this serves as a publish guard)"
   },
   "keywords": [],
   "author": "",
@@ -45,7 +47,8 @@
     "style-loader": "^0.13.0",
     "url-loader": "^0.5.7",
     "webpack": "^1.12.14",
-    "webpack-dev-server": "^1.14.1"
+    "webpack-dev-server": "^1.14.1",
+    "in-publish": "^2.0.0"
   },
   "dependencies": {
     "babel-plugin-transform-object-rest-spread": "^6.8.0",
