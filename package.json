@@ -7,6 +7,7 @@
     "clean": "rm -fr lib/",
     "raze": "rm -fr lib/ node_modules/",
     "build": "webpack --progress --colors",
+    "build-min": "webpack --config=webpack.min.config.js",
     "dev": "webpack-dev-server --devtool eval --progress --colors --content-base build --port 8090",
     "flow-check": "flow check",
     "flow": "flow; test $? -eq 0 -o $? -eq 2",

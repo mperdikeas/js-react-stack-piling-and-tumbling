@@ -1,5 +1,6 @@
 node_modules/
 build/bundle.js
+build/bundle.min.js
 npm-debug.log
 build/index.html
 lib/
