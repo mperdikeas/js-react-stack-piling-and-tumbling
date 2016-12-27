@@ -1,0 +1,7 @@
+[1] try to gauge the performance of the application and understand why the
+    immutable version fails to be significantly more performant than the
+    one utilizing deep cloning (this is evident particular in large grids)
+[2] option to rewind and go back in time
+[3] option to see in detail (with animations) the chain of events at the micro level (single grain drop)
+[4] option to stop before the first grain is spilled
+[5] option to log the records (stack toppled and longer chains) and go back in time to view them in detail.
