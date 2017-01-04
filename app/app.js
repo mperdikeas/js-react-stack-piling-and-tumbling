@@ -8,6 +8,8 @@ var TimerMixin = require('react-timer-mixin');
 
 import {List, fromJS} from 'immutable';
 const assert     = require('chai').assert;
+import {FixedSizeLifo} from 'fixed-size-lifo';
+
 import {Geometry} from './geometry.js';
 import {Mode}     from './mode.js';
 import Cell       from './cell.js';
@@ -22,11 +24,20 @@ function zero2D(rows, cols) {
 
 type StateT = {|
     mode: Mode,
-    geometry: Geometry,
     grid: List<List<number>>,
+    history: FixedSizeLifo,
+    timeDelta: number,               // how far in time we are
     numOfGrains: number,
     spillage: number,
     droppingGrain: boolean,
+    maxStacksToppled: ?number,
+    maxChainDepth: ?number
+|};
+
+type HistoricalStateT = {|
+    grid: List<List<number>>,
+    numOfGrains: number,
+    spillage: number,
     maxStacksToppled: ?number,
     maxChainDepth: ?number
 |};
@@ -35,25 +46,24 @@ type StateT = {|
 let grainDropTime = 0;
 
 
+const MAX_HISTORY = 10;
 
 const App = React.createClass({
     mixins: [TimerMixin],
-/*    propTypes: {
-        msg: React.PropTypes.string.isRequired
-        manhattan: React.PropTypes.number.isRequired
+    propTypes: {
+        geometry: React.PropTypes.object.isRequired
     },
-*/
+
     getInitialState: function(): StateT {
-        const manhattan = 10;
-        const geometry = new Geometry(manhattan, 25);
         return {      mode            : Mode.NORMAL
-                    , geometry        : geometry // TODO: geometry should not be part of the state
-                    , grid            : fromJS(zero2D(geometry.gridSize(), geometry.gridSize()))
-                    , numOfGrains: 0
-                    , spillage        : 0 // TODO: place grid, numOfGrains, spillage, maxStackToppled and maxChainDepth (but NOT droppingGrain) in a kind of historical state object to allow me to go back in time.
-                    , droppingGrain   : false
-                    , maxStacksToppled: null
-                    , maxChainDepth   : null
+                      , grid            : fromJS(zero2D(this.props.geometry.gridSize(), this.props.geometry.gridSize()))
+                      , history : new FixedSizeLifo(MAX_HISTORY)
+                      , timeDelta: 0
+                      , numOfGrains: 0
+                      , spillage        : 0 // TODO: place grid, numOfGrains, spillage, maxStackToppled and maxChainDepth (but NOT droppingGrain) in a kind of historical state object to allow me to go back in time.
+                      , droppingGrain   : false
+                      , maxStacksToppled: null
+                      , maxChainDepth   : null
                };
     }
     , grainDropping: function() {
@@ -64,14 +74,14 @@ const App = React.createClass({
     }
     , createCells: function() {
         const cells = [];
-        for (let i = 0 ; i < this.state.geometry.gridSize(); i++)
-            for (let j = 0; j < this.state.geometry.gridSize(); j++) {
+        for (let i = 0 ; i < this.props.geometry.gridSize(); i++)
+            for (let j = 0; j < this.props.geometry.gridSize(); j++) {
                 const key = JSON.stringify({i: i, j: j});
                 cells.push(
                         <Cell key   = {key}
                               i     = {i}
                               j     = {j}
-                              size  = {this.state.geometry.cellSize}
+                              size  = {this.props.geometry.cellSize}
                               value = {this.state.grid.getIn([i, j])}
                         >
                         </Cell>
@@ -80,11 +90,49 @@ const App = React.createClass({
         return cells;
     }
     , dropGrain() { // TODO: to dig whether and how I can use slow motion to see the individual tumbling effects (perhaps I can use yield to achieve the "one tiny step at a time" effect)
-        const pathToCenterOfGrid = [this.state.geometry.manhattan, this.state.geometry.manhattan];
+        const historyClone = this.state.history.clone();
+        historyClone.push({grid: this.state.grid, numOfGrains: this.state.numOfGrains, spillage: this.state.spillage, maxStacksToppled: this.maxStacksToppled, maxChainDepth: this.maxChainDepth});
+        const pathToCenterOfGrid = [this.props.geometry.manhattan, this.props.geometry.manhattan];
         const gridWithExtraGrainInCenter = this.state.grid.updateIn(pathToCenterOfGrid, (x)=>x+1);
         const gridAfterAllTumblingIsResolved = this.tumbling(gridWithExtraGrainInCenter);
-        this.setState({grid: gridAfterAllTumblingIsResolved, numOfGrains: this.state.numOfGrains+1});
+        this.setState({grid: gridAfterAllTumblingIsResolved, history: historyClone, numOfGrains: this.state.numOfGrains+1});
     }
+    , rewindHistory() {
+        const historicalState: HistoricalStateT = this.state.history.at(0);
+        const timeDelta = Math.min(MAX_HISTORY, this.state.history.size()-1);
+        console.log(`setting timeDelta to ${timeDelta}`);
+        this.setState({timeDelta: timeDelta,
+                       grid: historicalState.grid,
+                       numOfGrains: historicalState.numOfGrains,
+                       spillage: historicalState.spillage,
+                       maxStacksToppled: historicalState.maxStacksToppled,
+                       maxChainDepth: historicalState.maxChainDepth});
+    }
+    , deltaOneFrame(delta: number) {
+        assert.isTrue( (delta===1) || (delta===-1) );
+        const newDelta: number = this.state.timeDelta+delta;
+        console.log(`new delta is: ${newDelta}`);
+        const idx: number = this.state.history.size()-1-newDelta;
+        console.log(`history has size: ${this.state.history.size()}, examining at: ${idx}`);
+        const historicalState: HistoricalStateT = this.state.history.at(idx);
+        this.setState({timeDelta: newDelta,
+                       grid: historicalState.grid,
+                       numOfGrains: historicalState.numOfGrains,
+                       spillage: historicalState.spillage,
+                       maxStacksToppled: historicalState.maxStacksToppled,
+                       maxChainDepth: historicalState.maxChainDepth});
+    }
+    , backOneFrame() {this.deltaOneFrame(+1);}
+    , frwdOneFrame() {this.deltaOneFrame(-1);}
+    , backToThePresent() {
+        const historicalState: HistoricalStateT = this.state.history.peek();
+        this.setState({timeDelta: 0,
+                       grid: historicalState.grid,
+                       numOfGrains: historicalState.numOfGrains,
+                       spillage: historicalState.spillage,
+                       maxStacksToppled: historicalState.maxStacksToppled,
+                       maxChainDepth: historicalState.maxChainDepth});
+    }    
     , toggleContinuousGrainDrop() {
         this.setState({droppingGrain: !this.state.droppingGrain}, ()=>{
             if (this.state.droppingGrain)
@@ -96,9 +144,9 @@ const App = React.createClass({
         let spillage       = 0;
         type InnerTumblingT = {grid: any, maxDepth: number};        
         const _checkForTumblingAt = (grid: List<List<number>>, i: number, j: number) => {        
-            if ((i<0)||(i>=this.state.geometry.gridSize()))
+            if ((i<0)||(i>=this.props.geometry.gridSize()))
                 return {grid: grid, maxDepth:0};
-            if ((j<0)||(j>=this.state.geometry.gridSize()))
+            if ((j<0)||(j>=this.props.geometry.gridSize()))
                 return {grid: grid, maxDepth: 0};
             const _value : ?number = grid.getIn([i, j]);
             let subOrdinateMaxDepth;
@@ -119,7 +167,7 @@ const App = React.createClass({
                     return {grid: grid, maxDepth: 0};                
             } else throw new Error('bug');
         };
-        const recursiveTumbling: InnerTumblingT = _checkForTumblingAt(grid, this.state.geometry.manhattan, this.state.geometry.manhattan);
+        const recursiveTumbling: InnerTumblingT = _checkForTumblingAt(grid, this.props.geometry.manhattan, this.props.geometry.manhattan);
         let newMaxStacksToppled = null;
         if (this.state.maxStacksToppled != null)
             newMaxStacksToppled = stacksToppled > this.state.maxStacksToppled? {maxStacksToppled: stacksToppled} : {};
@@ -145,8 +193,8 @@ const App = React.createClass({
         let spillage = 0;
         const inc = (x)=>x+1;
         if (j-1>=0)                             grid = grid.updateIn([i  , j-1], inc); else spillage++;
-        if (i+1<this.state.geometry.gridSize()) grid = grid.updateIn([i+1, j  ], inc); else spillage++;
-        if (j+1<this.state.geometry.gridSize()) grid = grid.updateIn([i  , j+1], inc); else spillage++;
+        if (i+1<this.props.geometry.gridSize()) grid = grid.updateIn([i+1, j  ], inc); else spillage++;
+        if (j+1<this.props.geometry.gridSize()) grid = grid.updateIn([i  , j+1], inc); else spillage++;
         if (i-1>=0)                             grid = grid.updateIn([i-1, j  ], inc); else spillage++;
         return {grid: grid, spillage: spillage};
     }
@@ -156,11 +204,11 @@ const App = React.createClass({
     , render: function() {
         const appOuterDiv = {margin      : '1em'
                              , border    : '0'
-                             , width     : `${this.state.geometry.gridSizePx()}px`
+                             , width     : `${this.props.geometry.gridSizePx()}px`
                              , position  : 'relative'
                             };
-        const gridStyle = {width     : `${this.state.geometry.gridSizePx()}px`,
-                           height    : `${this.state.geometry.gridSizePx()}px`,
+        const gridStyle = {width     : `${this.props.geometry.gridSizePx()}px`,
+                           height    : `${this.props.geometry.gridSizePx()}px`,
                            margin    : '1rem 0 1rem 0',
                            background: 'red',
                            padding: 0,
@@ -190,7 +238,7 @@ const App = React.createClass({
         })();
         return (
             <div style={appOuterDiv}>
-                <div>Grains piling and tumbling on a <tt>{this.state.geometry.gridSize()}</tt>&times;<tt>{this.state.geometry.gridSize()}</tt> grid
+                <div>Grains piling and tumbling on a <tt>{this.props.geometry.gridSize()}</tt>&times;<tt>{this.props.geometry.gridSize()}</tt> grid
                 &mdash;&nbsp;<a onClick={this.toggleHelp} style={{cursor: 'pointer', color: 'blue', textDecoration: 'underline'}}>help</a></div>
 
     
@@ -198,12 +246,20 @@ const App = React.createClass({
                     {cells}
                 </div>
                 <div><strong>{this.state.numOfGrains}</strong> grains dropped,
-                    &nbsp;<strong>{this.state.spillage}</strong> grains spilled off the grid
+                &nbsp;<strong>{this.state.spillage}</strong> grains spilled off the grid
+                &nbsp;<strong>{this.state.history.size()}</strong> history size TODO remove that
                 </div>
                 <div style={{marginTop: '1em'}}>
-                    <button onClick={this.dropGrain} disabled={this.state.droppingGrain}>drop single grain</button>
-                    <button style={{marginLeft: '1em'}} onClick={this.toggleContinuousGrainDrop}>{continuousButtonText}</button>
+                <button                             disabled={(this.state.timeDelta!==0) || this.state.droppingGrain} onClick={this.dropGrain}                >drop single grain</button>
+                <button style={{marginLeft: '1em'}} disabled={ this.state.timeDelta!==0}                              onClick={this.toggleContinuousGrainDrop}>{continuousButtonText}</button>
                 </div>
+                <div style={{marginTop: '1em'}}>
+                <button onClick={this.rewindHistory}    disabled={this.state.droppingGrain}>&lt;&lt;</button>
+                <button onClick={this.backOneFrame}     disabled={this.state.droppingGrain}>&lt;</button>
+                <button onClick={this.frwdOneFrame}     disabled={this.state.droppingGrain}>&gt;</button>                                
+                <button onClick={this.backToThePresent} disabled={this.state.droppingGrain}>&gt;&gt;</button>
+
+                </div>                
                 {topplingStats}
                 {help}
             </div>
