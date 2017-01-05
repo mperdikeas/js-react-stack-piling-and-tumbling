@@ -24,14 +24,9 @@ function zero2D(rows, cols) {
 
 type StateT = {|
     mode: Mode,
-    grid: List<List<number>>,
     history: FixedSizeLifo,
-    timeDelta: number,               // how far in time we are
-    numOfGrains: number,
-    spillage: number,
-    droppingGrain: boolean,
-    maxStacksToppled: ?number,
-    maxChainDepth: ?number
+    timeDelta: number,               // how back in time we are
+    droppingGrain: boolean
 |};
 
 type HistoricalStateT = {|
@@ -42,6 +37,13 @@ type HistoricalStateT = {|
     maxChainDepth: ?number
 |};
 
+
+type TumblingResultT = {|
+                        grid         : List<List<number>>,
+                        depthReached : number,
+                        stacksToppled: number,
+                        spillage     : number
+                        |};
 
 let grainDropTime = 0;
 
@@ -55,15 +57,14 @@ const App = React.createClass({
     },
 
     getInitialState: function(): StateT {
-        return {      mode            : Mode.NORMAL
-                      , grid            : fromJS(zero2D(this.props.geometry.gridSize(), this.props.geometry.gridSize()))
-                      , history : new FixedSizeLifo(MAX_HISTORY)
-                      , timeDelta: 0
-                      , numOfGrains: 0
-                      , spillage        : 0 // TODO: place grid, numOfGrains, spillage, maxStackToppled and maxChainDepth (but NOT droppingGrain) in a kind of historical state object to allow me to go back in time.
+        const grid     = fromJS(zero2D(this.props.geometry.gridSize(), this.props.geometry.gridSize()));
+        const history = new FixedSizeLifo(MAX_HISTORY); // TODO: think how we can enforce type safety in FixedSizeLifo
+        const initialHistoryState: HistoricalStateT = {grid: grid, numOfGrains: 0, spillage: 0, maxStacksToppled: 0, maxChainDepth: 0};
+        history.push(initialHistoryState);
+        return {      mode              : Mode.NORMAL
+                      , history         : history
+                      , timeDelta       : 0 // TODO: rename to 'backInTime'
                       , droppingGrain   : false
-                      , maxStacksToppled: null
-                      , maxChainDepth   : null
                };
     }
     , grainDropping: function() {
@@ -72,7 +73,7 @@ const App = React.createClass({
             this.setTimeout(this.grainDropping, 0);
         }
     }
-    , createCells: function() {
+    , createCells: function(grid: any) {
         const cells = [];
         for (let i = 0 ; i < this.props.geometry.gridSize(); i++)
             for (let j = 0; j < this.props.geometry.gridSize(); j++) {
@@ -82,31 +83,44 @@ const App = React.createClass({
                               i     = {i}
                               j     = {j}
                               size  = {this.props.geometry.cellSize}
-                              value = {this.state.grid.getIn([i, j])}
+                              value = {grid.getIn([i, j])}
                         >
                         </Cell>
                 );
             }
         return cells;
     }
-    , dropGrain() { // TODO: to dig whether and how I can use slow motion to see the individual tumbling effects (perhaps I can use yield to achieve the "one tiny step at a time" effect)
-        const historyClone = this.state.history.clone();
-        historyClone.push({grid: this.state.grid, numOfGrains: this.state.numOfGrains, spillage: this.state.spillage, maxStacksToppled: this.maxStacksToppled, maxChainDepth: this.maxChainDepth});
+    , dropGrain() { 
         const pathToCenterOfGrid = [this.props.geometry.manhattan, this.props.geometry.manhattan];
-        const gridWithExtraGrainInCenter = this.state.grid.updateIn(pathToCenterOfGrid, (x)=>x+1);
-        const gridAfterAllTumblingIsResolved = this.tumbling(gridWithExtraGrainInCenter);
-        this.setState({grid: gridAfterAllTumblingIsResolved, history: historyClone, numOfGrains: this.state.numOfGrains+1});
+        const gridWithExtraGrainInCenter = this.state.history.peek().grid.updateIn(pathToCenterOfGrid, (x)=>x+1);
+        const tumblingResult: TumblingResultT = this.tumbling(gridWithExtraGrainInCenter);
+
+        const maxStacksToppled = (()=>{
+            if ((this.state.history.peek().maxStacksToppled==null) || (tumblingResult.stacksToppled > this.state.history.peek().maxStacksToppled))
+                return tumblingResult.stacksToppled;
+        })();
+
+
+        const maxChainDepth = (()=>{
+            if ((this.state.history.peek().maxChainDepth==null) || (tumblingResult.depthReached > this.state.history.peek().maxChainDepth))
+                return tumblingResult.depthReached;
+        })();
+
+            
+        const historyClone = this.state.history.clone();
+        historyClone.push({grid               : tumblingResult.grid
+                           , numOfGrains      : this.state.history.peek().numOfGrains+1
+                           , spillage         : this.state.history.peek().spillage+tumblingResult.spillage
+                           , maxStacksToppled : maxStacksToppled
+                           , maxChainDepth    : maxChainDepth});
+        
+        this.setState({history: historyClone});
     }
     , rewindHistory() {
-        const historicalState: HistoricalStateT = this.state.history.at(0);
         const timeDelta = Math.min(MAX_HISTORY, this.state.history.size()-1);
         console.log(`setting timeDelta to ${timeDelta}`);
-        this.setState({timeDelta: timeDelta,
-                       grid: historicalState.grid,
-                       numOfGrains: historicalState.numOfGrains,
-                       spillage: historicalState.spillage,
-                       maxStacksToppled: historicalState.maxStacksToppled,
-                       maxChainDepth: historicalState.maxChainDepth});
+        this.setState({timeDelta: timeDelta});
+
     }
     , deltaOneFrame(delta: number) {
         assert.isTrue( (delta===1) || (delta===-1) );
@@ -115,23 +129,12 @@ const App = React.createClass({
         const idx: number = this.state.history.size()-1-newDelta;
         console.log(`history has size: ${this.state.history.size()}, examining at: ${idx}`);
         const historicalState: HistoricalStateT = this.state.history.at(idx);
-        this.setState({timeDelta: newDelta,
-                       grid: historicalState.grid,
-                       numOfGrains: historicalState.numOfGrains,
-                       spillage: historicalState.spillage,
-                       maxStacksToppled: historicalState.maxStacksToppled,
-                       maxChainDepth: historicalState.maxChainDepth});
+        this.setState({timeDelta: newDelta});
     }
     , backOneFrame() {this.deltaOneFrame(+1);}
     , frwdOneFrame() {this.deltaOneFrame(-1);}
     , backToThePresent() {
-        const historicalState: HistoricalStateT = this.state.history.peek();
-        this.setState({timeDelta: 0,
-                       grid: historicalState.grid,
-                       numOfGrains: historicalState.numOfGrains,
-                       spillage: historicalState.spillage,
-                       maxStacksToppled: historicalState.maxStacksToppled,
-                       maxChainDepth: historicalState.maxChainDepth});
+        this.setState({timeDelta: 0});
     }    
     , toggleContinuousGrainDrop() {
         this.setState({droppingGrain: !this.state.droppingGrain}, ()=>{
@@ -139,11 +142,11 @@ const App = React.createClass({
                 this.grainDropping();
         });
     }
-    , tumbling(grid: List<List<number>>): List<List<number>> {
+    , tumbling(grid: List<List<number>>): TumblingResultT {
         let stacksToppled  = 0;
         let spillage       = 0;
         type InnerTumblingT = {grid: any, maxDepth: number};        
-        const _checkForTumblingAt = (grid: List<List<number>>, i: number, j: number) => {        
+        const checkForTumblingAt = (grid: List<List<number>>, i: number, j: number) => {        
             if ((i<0)||(i>=this.props.geometry.gridSize()))
                 return {grid: grid, maxDepth:0};
             if ((j<0)||(j>=this.props.geometry.gridSize()))
@@ -157,22 +160,24 @@ const App = React.createClass({
                     grid = x.grid;
                     spillage += x.spillage;
                     stacksToppled++;
-                    const tumblingNorth: InnerTumblingT = _checkForTumblingAt(              grid, i  , j-1);
-                    const tumblingEast : InnerTumblingT = _checkForTumblingAt(tumblingNorth.grid, i+1, j  );
-                    const tumblingSouth: InnerTumblingT = _checkForTumblingAt(tumblingEast .grid, i  , j+1);
-                    const tumblingWest : InnerTumblingT = _checkForTumblingAt(tumblingSouth.grid, i-1, j  );
+                    const tumblingNorth: InnerTumblingT = checkForTumblingAt(              grid, i  , j-1);
+                    const tumblingEast : InnerTumblingT = checkForTumblingAt(tumblingNorth.grid, i+1, j  );
+                    const tumblingSouth: InnerTumblingT = checkForTumblingAt(tumblingEast .grid, i  , j+1);
+                    const tumblingWest : InnerTumblingT = checkForTumblingAt(tumblingSouth.grid, i-1, j  );
                     subOrdinateMaxDepth = Math.max(tumblingNorth.maxDepth, tumblingEast.maxDepth, tumblingSouth.maxDepth, tumblingWest.maxDepth);
                     return {grid: tumblingWest.grid, maxDepth: 1+subOrdinateMaxDepth};
                 } else
                     return {grid: grid, maxDepth: 0};                
             } else throw new Error('bug');
         };
-        const recursiveTumbling: InnerTumblingT = _checkForTumblingAt(grid, this.props.geometry.manhattan, this.props.geometry.manhattan);
+        const recursiveTumbling: InnerTumblingT = checkForTumblingAt(grid, this.props.geometry.manhattan, this.props.geometry.manhattan);
+        /*
         let newMaxStacksToppled = null;
         if (this.state.maxStacksToppled != null)
             newMaxStacksToppled = stacksToppled > this.state.maxStacksToppled? {maxStacksToppled: stacksToppled} : {};
         else
             newMaxStacksToppled = {maxStacksToppled: stacksToppled};
+
         let newMaxChainDepth = null;
         if (this.state.maxChainDepth != null)
             newMaxChainDepth = recursiveTumbling.maxDepth > this.state.maxChainDepth? {maxChainDepth: recursiveTumbling.maxDepth} : {};
@@ -184,7 +189,11 @@ const App = React.createClass({
                                        , newMaxChainDepth
                                        , {spillage: this.state.spillage+spillage});
         this.setState(newState);
-        return recursiveTumbling.grid;
+*/
+        return {grid           : recursiveTumbling.grid
+                , depthReached : recursiveTumbling.maxDepth
+                , stacksToppled: stacksToppled
+                , spillage     : spillage};
     }
     , tumbleAt(grid: any, i: number, j: number): {grid: any; spillage: number} {
         // curiously if you set this to 0 (zero) the summetry breaks at some point (I think I get why), but this also shows
@@ -214,25 +223,26 @@ const App = React.createClass({
                            padding: 0,
                            fontSize: 0};
 
-        const cells = this.createCells();
+        const historicalState : HistoricalStateT = this.state.history.at(this.state.history.size()-1-this.state.timeDelta); // TODO: use the updated lifo peek that takes a numeric argument
+        const cells = this.createCells(historicalState.grid);
         const continuousButtonText = this.state.droppingGrain?"stop dropping grain":"start dropping grain";
         const REPORT_STATISTICS = false;
         const topplingStats = REPORT_STATISTICS?
                   (
-                  this.state.maxStacksToppled!=null?
+                  historicalState.maxStacksToppled!=null?
                    (<div>
                        <div>
-                           maximum number of stacks toppled: {this.state.maxStacksToppled}
+                           maximum number of stacks toppled: {historicalState.maxStacksToppled}
                        </div>
                        <div>
-                           maximum chain length: {this.state.maxChainDepth}
+                           maximum chain length: {historicalState.maxChainDepth}
                        </div>
                    </div>
                    ):null)
                   :null;
         const help = (()=>{
             if (this.state.mode===Mode.HELP)
-                return (<Help toggleHelp={this.toggleHelp}/>)
+                return (<Help toggleHelp={this.toggleHelp}/>);
             else
                 return null;
         })();
@@ -245,8 +255,8 @@ const App = React.createClass({
                 <div style={gridStyle}>
                     {cells}
                 </div>
-                <div><strong>{this.state.numOfGrains}</strong> grains dropped,
-                &nbsp;<strong>{this.state.spillage}</strong> grains spilled off the grid
+                <div><strong>{historicalState.numOfGrains}</strong> grains dropped,
+                &nbsp;<strong>{historicalState.spillage}</strong> grains spilled off the grid
                 &nbsp;<strong>{this.state.history.size()}</strong> history size TODO remove that
                 </div>
                 <div style={{marginTop: '1em'}}>
@@ -254,10 +264,14 @@ const App = React.createClass({
                 <button style={{marginLeft: '1em'}} disabled={ this.state.timeDelta!==0}                              onClick={this.toggleContinuousGrainDrop}>{continuousButtonText}</button>
                 </div>
                 <div style={{marginTop: '1em'}}>
-                <button onClick={this.rewindHistory}    disabled={this.state.droppingGrain}>&lt;&lt;</button>
-                <button onClick={this.backOneFrame}     disabled={this.state.droppingGrain}>&lt;</button>
-                <button onClick={this.frwdOneFrame}     disabled={this.state.droppingGrain}>&gt;</button>                                
-                <button onClick={this.backToThePresent} disabled={this.state.droppingGrain}>&gt;&gt;</button>
+                <button onClick={this.rewindHistory}    disabled={(this.state.timeDelta===Math.min(MAX_HISTORY, this.state.history.size())-1) || this.state.droppingGrain}>
+                    &lt;&lt;
+                </button> 
+                <button onClick={this.backOneFrame}    disabled={(this.state.timeDelta===Math.min(MAX_HISTORY, this.state.history.size())-1) || this.state.droppingGrain}>
+                    &lt;
+                </button>                 
+                <button onClick={this.frwdOneFrame}     disabled={(this.state.timeDelta===0) || this.state.droppingGrain}>&gt;</button>                                
+                <button onClick={this.backToThePresent} disabled={(this.state.timeDelta===0) || this.state.droppingGrain}>&gt;&gt;</button>
 
                 </div>                
                 {topplingStats}
