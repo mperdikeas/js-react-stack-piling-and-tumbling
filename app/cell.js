@@ -22,7 +22,6 @@ const Cell = React.createClass({
                 || (this.props.value!== nextProps.value));
     }
     , render: function() {
-        console.log('render');
         assert.isTrue( _.isInteger(this.props.value) && (this.props.value>=0) && (this.props.value<4) );
         const cellStyle = {width: `${this.props.size}px`,
                            height: `${this.props.size}px`,

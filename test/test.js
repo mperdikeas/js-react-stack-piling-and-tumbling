@@ -6,6 +6,29 @@ import _ from 'lodash';
 import {List, fromJS} from 'immutable';
 
 describe('generic exploratory', function () {
+    describe('yield', function() {
+        it ('should work', function() {
+            function* upTo(n: number, slow: boolean = false) {
+                if (slow)
+                    for (let i = 0 ; i < n ; i++)
+                        yield i;
+                else
+                    yield n;
+            }
+            {
+                const it = upTo(10, true);
+                for (let v of it)
+                    console.log(v);
+            }
+            console.log('========');
+            {
+                const it = upTo(10, false);
+                for (let v of it)
+                    console.log(v);
+            }
+        });
+    });
+    if (false) // TODO
     describe('chai', function() {
         describe('isString', function() {
             it('works with both primitives and String', function() {
